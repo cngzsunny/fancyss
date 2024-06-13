@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# shadowsocks script for koolshare merlin armv7l 384 router with kernel 2.6.36.4
+# shadowsocks script for koolshare merlin armv7l 384/386 router with kernel 2.6.36.4
 
 source /koolshare/scripts/ss_base.sh
 #-----------------------------------------------
@@ -221,6 +221,7 @@ restore_conf() {
 	rm -rf /tmp/wblist.conf
 	rm -rf /tmp/ss_host.conf
 	rm -rf /tmp/smartdns.conf
+	rm -rf /tmp/gfwlist.txt
 }
 
 kill_process() {
@@ -335,9 +336,10 @@ kill_process() {
 
 # ================================= ss prestart ===========================
 ss_pre_start() {
+	local IS_LOCAL_ADDR=$(echo $ss_basic_server | grep -o "127.0.0.1")
 	if [ "$ss_lb_enable" == "1" ]; then
 		echo_date ---------------------- 【科学上网】 启动前触发脚本 ----------------------
-		if [ $(echo $ss_basic_server | grep -o "127.0.0.1") ] && [ "$ss_basic_port" == "$ss_lb_port" ]; then
+		if [ -n ${IS_LOCAL_ADDR} -a "$ss_basic_port" == "$ss_lb_port" ]; then
 			echo_date 插件启动前触发:触发启动负载均衡功能！
 			#start haproxy
 			sh /koolshare/scripts/ss_lb_config.sh
@@ -345,9 +347,9 @@ ss_pre_start() {
 			echo_date 插件启动前触发:未选择负载均衡节点，不触发负载均衡启动！
 		fi
 	else
-		if [ $(echo $ss_basic_server | grep -o "127.0.0.1") ] && [ "$ss_basic_port" == "$ss_lb_port" ]; then
+		if [ -n ${IS_LOCAL_ADDR} -a "$ss_basic_port" == "$ss_lb_port" ]; then
 			echo_date 插件启动前触发【警告】：你选择了负载均衡节点，但是负载均衡开关未启用！！
-			#else
+		#else
 			#echo_date ss启动前触发：你选择了普通节点，不触发负载均衡启动！
 		fi
 	fi
@@ -789,6 +791,7 @@ create_dnsmasq_conf() {
 	rm -rf /tmp/custom.conf
 	rm -rf /tmp/wblist.conf
 	rm -rf /tmp/gfwlist.conf
+	rm -rf /tmp/gfwlist.txt
 	rm -rf /jffs/configs/dnsmasq.d/custom.conf
 	rm -rf /jffs/configs/dnsmasq.d/wblist.conf
 	rm -rf /jffs/configs/dnsmasq.d/cdn.conf
@@ -1026,6 +1029,7 @@ start_speeder() {
 		if [ "$ss_basic_udp_boost_enable" == "1" ]; then
 			if [ "$ss_basic_udp_software" == "1" ]; then
 				echo_date 开启UDPspeederV1进程.
+				[ -z "$ss_basic_udpv1_rserver" ] && ss_basic_udpv1_rserver="$ss_basic_server_ip"
 				[ -n "$ss_basic_udpv1_duplicate_time" ] && duplicate_time="-t $ss_basic_udpv1_duplicate_time" || duplicate_time=""
 				[ -n "$ss_basic_udpv1_jitter" ] && jitter="-j $ss_basic_udpv1_jitter" || jitter=""
 				[ -n "$ss_basic_udpv1_report" ] && report="--report $ss_basic_udpv1_report" || report=""
@@ -1045,6 +1049,7 @@ start_speeder() {
 				fi
 			elif [ "$ss_basic_udp_software" == "2" ]; then
 				echo_date 开启UDPspeederV2进程.
+				[ -z "$ss_basic_udpv2_rserver" ] && ss_basic_udpv2_rserver="$ss_basic_server_ip"
 				[ "$ss_basic_udpv2_disableobscure" == "1" ] && disable_obscure="--disable-obscure" || disable_obscure=""
 				[ "$ss_basic_udpv2_disablechecksum" == "1" ] && disable_checksum="--disable-checksum" || disable_checksum=""
 				[ -n "$ss_basic_udpv2_timeout" ] && timeout="--timeout $ss_basic_udpv2_timeout" || timeout=""
@@ -1071,6 +1076,7 @@ start_speeder() {
 		#开启udp2raw
 		if [ "$ss_basic_udp2raw_boost_enable" == "1" ]; then
 			echo_date 开启UDP2raw进程.
+			[ -z "$ss_basic_udp2raw_rserver" ] && ss_basic_udp2raw_rserver="$ss_basic_server_ip"
 			[ "$ss_basic_udp2raw_a" == "1" ] && UD2RAW_EX1="-a" || UD2RAW_EX1=""
 			[ "$ss_basic_udp2raw_keeprule" == "1" ] && UD2RAW_EX2="--keep-rule" || UD2RAW_EX2=""
 			[ -n "$ss_basic_udp2raw_lowerlevel" ] && UD2RAW_LOW="--lower-level $ss_basic_udp2raw_lowerlevel" || UD2RAW_LOW=""
@@ -1765,9 +1771,9 @@ flush_nat() {
 	ipset -F router >/dev/null 2>&1 && ipset -X router >/dev/null 2>&1
 	#remove_redundant_rule
 	ip_rule_exist=$(ip rule show | grep "lookup 310" | grep -c 310)
-	if [ -n "ip_rule_exist" ]; then
+	if [ -n "${ip_rule_exist}" ]; then
 		#echo_date 清除重复的ip rule规则.
-		until [ "$ip_rule_exist" == "0" ]; do
+		until [ "${ip_rule_exist}" == "0" ]; do
 			IP_ARG=$(ip rule show | grep "lookup 310" | head -n 1 | cut -d " " -f3,4,5,6)
 			ip rule del $IP_ARG
 			ip_rule_exist=$(expr $ip_rule_exist - 1)
@@ -2043,11 +2049,19 @@ chromecast() {
 # -----------------------------------nat part end--------------------------------------------------------
 
 restart_dnsmasq() {
-	# use use local dns as system resolver
+	# 如果是梅林固件，需要将 【Tool - Other Settings  - Advanced Tweaks and Hacks - Wan: Use local caching DNS server as system resolver (default: No)】此处设置为【是】
+	# 这将确保固件自身的DNS解析使用127.0.0.1，而不是上游的DNS。否则插件的状态检测将无法解析谷歌，导致状态检测失败。
 	local DLC=$(nvram get dns_local_cache)
 	if [ "$DLC" == "0" ]; then
 		nvram set dns_local_cache=1
 		nvram commit
+	fi
+	# 从梅林刷到官改固件，如果不重置固件，则dns_local_cache将会保留，会导致误判，所以需要改写一次以确保OK
+	local LOCAL_DNS=$(cat /etc/resolv.conf|grep "127.0.0.1")
+	if [ -z "$LOCAL_DNS" ]; then
+		cat >/etc/resolv.conf <<-EOF
+			nameserver 127.0.0.1
+		EOF
 	fi
 	# Restart dnsmasq
 	echo_date 重启dnsmasq服务...
@@ -2194,7 +2208,7 @@ ss_pre_stop() {
 }
 
 detect() {
-	MODEL=$(nvram get model)
+	local MODEL=$(nvram get productid)
 	# 检测jffs2脚本是否开启，如果没有开启，将会影响插件的自启和DNS部分（dnsmasq.postconf）
 	#if [ "$MODEL" != "GT-AC5300" ];then
 	# 判断为merlin固件，需要开启jffs2_scripts
